@@ -106,7 +106,26 @@
   }
   .level-picker button:disabled { opacity: .3; }
   .level-picker span { font-size: 30px; font-weight: 900; color: #333; min-width: 150px; }
-  .result-stars { font-size: 44px; font-weight: 900; color: #b7791f; margin: 4px 0 8px; }
+  .countdown {
+    position: absolute; top: 52%; left: 50%; transform: translate(-50%, -50%);
+    font-size: clamp(90px, 20vw, 180px); font-weight: 900; color: #fff; opacity: 0;
+    text-shadow: 0 6px 0 rgba(0,0,0,.2); -webkit-text-stroke: 3px rgba(80,40,160,.6);
+  }
+  .countdown.pop { animation: count .6s ease-out forwards; }
+  @keyframes count {
+    0% { transform: translate(-50%, -50%) scale(1.8); opacity: 0; }
+    25% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+    75% { opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(.85); opacity: 0; }
+  }
+  .stars.bump { animation: bump .3s ease-out; }
+  @keyframes bump { 50% { transform: scale(1.25); } }
+  .rating { font-size: 72px; line-height: 1; margin: 6px 0 4px; letter-spacing: 6px; }
+  .rating span { color: #e5e7eb; display: inline-block; }
+  .rating span.on { color: var(--gold); text-shadow: 0 4px 0 #d97706; animation: starIn .45s cubic-bezier(.2,1.8,.4,1) both; }
+  @keyframes starIn { from { transform: scale(0) rotate(-90deg); } to { transform: scale(1) rotate(0); } }
+  .best { font-size: 26px; color: var(--gold); font-weight: 900; min-height: 32px; letter-spacing: 3px; }
+  .result-stars { font-size: 26px; font-weight: 900; color: #b7791f; margin: 4px 0 8px; }
   .ball-emoji { font-size: 64px; line-height: 1; }
 </style>
 </head>
@@ -124,6 +143,7 @@
   <button class="round-btn" id="muteBtn" aria-label="Sound">🔊</button>
   <div class="stars">⭐ <span id="starCount">0</span></div>
   <div class="toast" id="toast"></div>
+  <div class="countdown" id="countdown"></div>
   <div class="hint" id="hint"><span class="hand">👆</span> Swipe up to roll, sideways to steer!</div>
 </div>
 
@@ -136,6 +156,7 @@
       <span id="lvlPick">Level 1</span>
       <button id="lvlUp" aria-label="Next level">+</button>
     </div>
+    <div class="best" id="lvlBest"></div>
     <button class="big-btn" id="playBtn">▶ Play</button>
   </div>
 </div>
@@ -152,6 +173,7 @@
 <div class="overlay" id="winScreen">
   <div class="card">
     <h1 id="winTitle">Level 1 Done!</h1>
+    <div class="rating" id="winRating"></div>
     <div class="result-stars" id="winStars">⭐ 0</div>
     <p id="winMsg">Great job!</p>
     <button class="big-btn" id="nextBtn">Next Level ▶</button>

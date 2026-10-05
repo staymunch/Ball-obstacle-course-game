@@ -74,6 +74,8 @@ const sound = {
   land() { this.tone(120, 0.12, { type: 'triangle', vol: 0.2, slideTo: 60 }); },
   ring() { [784, 988, 1175].forEach((f, i) => this.tone(f, 0.15, { type: 'triangle', vol: 0.12, delay: i * 0.06 })); },
   checkpoint() { [523, 659, 784].forEach((f, i) => this.tone(f, 0.18, { type: 'triangle', vol: 0.14, delay: i * 0.09 })); },
+  boost() { this.tone(220, 0.4, { type: 'sawtooth', vol: 0.08, slideTo: 880 }); },
+  beep(hi) { this.tone(hi ? 1046 : 523, hi ? 0.4 : 0.15, { type: 'square', vol: 0.08 }); },
   whoops() { this.tone(500, 0.6, { type: 'sine', vol: 0.15, slideTo: 120 }); },
   win() {
     [523, 659, 784, 1047, 784, 1047].forEach((f, i) =>
@@ -134,6 +136,19 @@ const stripeTex = canvasTex(128, 32, (g, w, h) => {
   }
 });
 
+const curbTex = canvasTex(64, 16, (g, w, h) => {
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#ef4444'; g.fillRect(0, 0, w / 2, h);
+});
+
+const boostTex = canvasTex(128, 128, (g, w, h) => {
+  g.fillStyle = 'rgba(0,200,255,0.25)'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#ffffff'; g.lineWidth = 16; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (const y of [28, 92]) {
+    g.beginPath(); g.moveTo(24, y + 26); g.lineTo(64, y - 8); g.lineTo(104, y + 26); g.stroke();
+  }
+});
+
 const ballTex = canvasTex(512, 256, (g, w, h) => {
   g.fillStyle = '#8fdc2b'; g.fillRect(0, 0, w, h);
   // fuzzy speckles
@@ -186,14 +201,41 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 const scene = new THREE.Scene();
 const SKY_TOP = new THREE.Color('#7cc4ff');
 const SKY_BOTTOM = new THREE.Color('#eef6ff');
-scene.background = canvasTex(4, 256, (g, w, h) => {
-  const grd = g.createLinearGradient(0, 0, 0, h);
-  grd.addColorStop(0, '#' + SKY_TOP.getHexString());
-  grd.addColorStop(0.6, '#' + SKY_BOTTOM.getHexString());
-  grd.addColorStop(1, '#' + SKY_BOTTOM.getHexString());
-  g.fillStyle = grd; g.fillRect(0, 0, w, h);
-}, false);
+function skyTex(top, bottom) {
+  return canvasTex(4, 256, (g, w, h) => {
+    const grd = g.createLinearGradient(0, 0, 0, h);
+    grd.addColorStop(0, top);
+    grd.addColorStop(0.6, bottom);
+    grd.addColorStop(1, bottom);
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+  }, false);
+}
+scene.background = skyTex('#' + SKY_TOP.getHexString(), '#' + SKY_BOTTOM.getHexString());
 scene.fog = new THREE.Fog(SKY_BOTTOM, 45, 140);
+
+const THEMES = [
+  { name: 'Sky Track', top: '#7cc4ff', bottom: '#eef6ff', floor: 0xffffff, cloud: 0xffffff },
+  { name: 'Candy Land', top: '#ff8ccf', bottom: '#ffe6f4', floor: 0xffd9ec, cloud: 0xfff0fa },
+  { name: 'Ice Peaks', top: '#4f9fe0', bottom: '#e6f6ff', floor: 0xcfe9ff, cloud: 0xffffff },
+  { name: 'Sunset Run', top: '#ff7a59', bottom: '#ffe0b0', floor: 0xffd2a6, cloud: 0xffd1c1 },
+  { name: 'Space Road', top: '#050822', bottom: '#2c1f5e', floor: 0xbdb5ff, cloud: 0x6d5bd0, stars: true },
+];
+const themeFor = n => THEMES[Math.floor((n - 1) / 2) % THEMES.length];
+
+const starfield = (() => {
+  const pts = [];
+  for (let i = 0; i < 1200; i++) {
+    const v = new THREE.Vector3().randomDirection().multiplyScalar(300);
+    if (v.y < -60) v.y = -v.y;   // mostly above the horizon
+    pts.push(v.x, v.y, v.z);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const p = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: false, fog: false }));
+  p.visible = false;
+  scene.add(p);
+  return p;
+})();
 
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 400);
 
@@ -205,12 +247,14 @@ Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, n
 sun.shadow.bias = -0.0005;
 scene.add(sun, sun.target);
 
+let baseFov = 60;
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   // portrait screens need a wider field of view so the track fits
-  camera.fov = w / h < 1 ? 72 : 60;
+  baseFov = w / h < 1 ? 72 : 60;
+  camera.fov = baseFov;
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
@@ -232,6 +276,8 @@ const M = {
   slider: [0x3b82f6, 0xf97316, 0xec4899, 0x14b8a6].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45 })),
   spinner: new THREE.MeshStandardMaterial({ color: 0xa855f7, roughness: 0.4 }),
   cloud: new THREE.MeshLambertMaterial({ color: 0xffffff }),
+  curb: new THREE.MeshStandardMaterial({ map: curbTex, roughness: 0.6 }),
+  boost: new THREE.MeshBasicMaterial({ map: boostTex, transparent: true, depthWrite: false }),
   gatePost: new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.5 }),
   gatePostDone: new THREE.MeshStandardMaterial({ color: 0x22c55e, roughness: 0.5 }),
 };
@@ -347,8 +393,12 @@ function slopeAt(s) {
   const r = rampAt(s);
   return -SLOPE + (r ? r.H / r.len : 0);
 }
+function openAt(s) {
+  for (const o of level.open) if (s > o[0] && s < o[1]) return o;
+  return null;
+}
 function railsAt(s) {
-  return s >= level.startS && s <= level.endS && !gapAt(s);
+  return s >= level.startS && s <= level.endS && !gapAt(s) && !openAt(s);
 }
 function targetSpeed(n) { return Math.min(8.5 + n * 0.35, 13.5); }   // jump launch speed
 function maxSpeed(n) { return targetSpeed(n) + 5; }
@@ -358,11 +408,12 @@ function generateLevel(n) {
   const pick = arr => arr[Math.floor(rng() * arr.length)];
   const L = {
     n, startS: -8, ramps: [], gaps: [], checkpoints: [], obstacles: [], coins: [], rings: [], curves: [],
+    open: [], boosts: [],
   };
   let heading = 0;
   const MAX_HEADING = 1.4;   // never turn back on itself, so the track can't cross over itself
   const curve = (s0, dir) => {
-    const len = 20 + rng() * 14;
+    const len = 18 + rng() * 10;
     const maxAngle = Math.min(0.55 + n * 0.08, 1.3);
     const angle = (0.6 + rng() * 0.4) * maxAngle;
     if (!dir) dir = rng() < 0.5 ? -1 : 1;
@@ -386,8 +437,8 @@ function generateLevel(n) {
 
   const sections = {
     slider(s0) {
-      const k = n < 4 ? 2 : 3;
-      const speed = 1.3 + Math.min(n, 12) * 0.07;
+      const k = n < 3 ? 2 : 3;
+      const speed = 1.5 + Math.min(n, 12) * 0.09;
       for (let i = 0; i < k; i++) {
         const s = s0 + 6 + i * 8;
         L.obstacles.push({ type: 'slider', s, amp: 2.2, speed, phase: rng() * Math.PI * 2, color: i % 4 });
@@ -396,20 +447,20 @@ function generateLevel(n) {
       return s0 + 6 + k * 8;
     },
     spinner(s0) {
-      const k = n < 6 ? 1 : 2;
+      const k = n < 4 ? 1 : 2;
       for (let i = 0; i < k; i++) {
         const s = s0 + 7 + i * 11;
         const dir = rng() < 0.5 ? -1 : 1;
-        L.obstacles.push({ type: 'spinner', s, speed: dir * (1.1 + Math.min(n, 12) * 0.05), phase: rng() * Math.PI });
+        L.obstacles.push({ type: 'spinner', s, speed: dir * (1.3 + Math.min(n, 12) * 0.07), phase: rng() * Math.PI });
         for (const x of [-2.7, 2.7]) L.coins.push({ s, x, h: 0 });
       }
       return s0 + 7 + k * 11;
     },
     hammer(s0) {
-      const k = n < 5 ? 1 : 2;
+      const k = n < 4 ? 1 : 2;
       for (let i = 0; i < k; i++) {
         const s = s0 + 7 + i * 10;
-        L.obstacles.push({ type: 'hammer', s, speed: (2 * Math.PI) / Math.max(2.4, 3.4 - n * 0.05), phase: rng() * Math.PI * 2 });
+        L.obstacles.push({ type: 'hammer', s, speed: (2 * Math.PI) / Math.max(2.0, 3.0 - n * 0.07), phase: rng() * Math.PI * 2 });
         for (let j = -1; j <= 1; j++) L.coins.push({ s: s + j * 1.6, x: 0, h: 0 });
       }
       return s0 + 7 + k * 10;
@@ -422,7 +473,7 @@ function generateLevel(n) {
       const vyr = vt * (H / len);
       const tLand = (vyr + Math.sqrt(vyr * vyr + 2 * GRAVITY * H)) / GRAVITY;
       const landDist = vt * tLand;
-      const gap = n >= 3 ? clamp(landDist * 0.55, 2.5, 6) : 0;
+      const gap = n >= 2 ? clamp(landDist * 0.55, 2.5, 6) : 0;
       L.ramps.push({ s0: rs, len, H });
       const top = rs + len;
       if (gap > 0) L.gaps.push([top, top + gap]);
@@ -436,7 +487,23 @@ function generateLevel(n) {
       }
       return top + Math.max(gap, landDist) + 6;
     },
+    // a stretch with no guard rails: careful steering needed (checkpoint right before it)
+    edge(s0) {
+      L.checkpoints.push(s0);
+      const a = s0 + 4, b = a + 20 + Math.min(n, 8) * 1.5;
+      L.open.push([a, b]);
+      // stars near the edges: risky but rewarding
+      let side = pick([-1, 1]);
+      for (let s = a + 3; s < b - 2; s += 3) { L.coins.push({ s, x: side * 2.5, h: 0 }); if (rng() < 0.4) side = -side; }
+      if (n >= 4) {
+        const mid = (a + b) / 2;
+        if (rng() < 0.5) L.obstacles.push({ type: 'slider', s: mid, amp: 2.2, speed: 1.4 + Math.min(n, 12) * 0.06, phase: rng() * 6, color: 2 });
+        else L.obstacles.push({ type: 'hammer', s: mid, speed: (2 * Math.PI) / 3.2, phase: rng() * 6 });
+      }
+      return b + 3;
+    },
   };
+  const boost = s => L.boosts.push({ s, x: pick([-2, 0, 2]) });
 
   let s = 0;
   L.checkpoints.push(0);
@@ -444,7 +511,8 @@ function generateLevel(n) {
   s = 24;
   // twists and turns between obstacle sections (obstacles and jumps themselves sit on straights)
   const bend = () => {
-    if (rng() > 0.75) return;
+    if (rng() > 0.55) return;
+    if (rng() < 0.5) { boost(s + 1); s += 4; }
     const c = curve(s);
     coinLine(s + 4, c.end - 4, pick(['center', 'wave']));
     s = c.end;
@@ -454,21 +522,22 @@ function generateLevel(n) {
   bend();
 
   const types = ['slider', 'jump'];
-  if (n >= 2) types.push('spinner');
+  if (n >= 2) types.push('spinner', 'edge');
   if (n >= 3) types.push('hammer');
-  const count = Math.min(3 + n, 14);
+  const count = Math.min(3 + Math.floor(n * 0.6), 9);   // short, dense levels
   let last = null, sinceCp = 0;
-  // Make sure the newest obstacle type shows up in the level it unlocks
-  const forced = { 1: 'jump', 2: 'spinner', 3: 'hammer' }[n];
+  // Make sure the newest obstacle types show up in the level they unlock
+  const forced = { 1: ['jump'], 2: ['edge', 'spinner'], 3: ['hammer', 'edge'] }[n] || ['edge'];
   for (let i = 0; i < count; i++) {
     let t;
-    if (i === 1 && forced) t = forced;
+    if (i >= 1 && i <= forced.length) t = forced[i - 1];
     else do { t = pick(types); } while (t === last);
-    if (t !== 'jump' && sinceCp >= 3) { L.checkpoints.push(s); sinceCp = 0; s += 3; }
+    const own = t === 'jump' || t === 'edge';   // these place their own checkpoint
+    if (!own && sinceCp >= 3) { L.checkpoints.push(s); sinceCp = 0; s += 3; }
     s = sections[t](s);
-    sinceCp = t === 'jump' ? 0 : sinceCp + 1;
+    sinceCp = own ? 0 : sinceCp + 1;
     last = t;
-    if (rng() < 0.5) { coinLine(s + 3, s + 11); s += 14; } else s += 5;
+    if (rng() < 0.35) { coinLine(s + 3, s + 9); s += 12; } else s += 4;
     bend();
   }
   L.finishS = s + 6;
@@ -668,21 +737,71 @@ function disposeGroup(group) {
   });
 }
 
+function applyTheme(t) {
+  if (scene.background) scene.background.dispose();
+  scene.background = skyTex(t.top, t.bottom);
+  scene.fog.color.set(t.bottom);
+  M.wood.color.setHex(t.floor);
+  M.woodSide.color.setHex(t.floor);
+  M.cloud.color.setHex(t.cloud);
+  starfield.visible = !!t.stars;
+  document.body.style.background = t.bottom;
+}
+
+// a thin tube along one edge of the track (used for the red/white curbs of rail-less stretches)
+function edgeTube(a, b, x, yOff, radius, mat) {
+  const path = new THREE.CurvePath();
+  for (let s = a; s < b - 0.01; s += 0.5) {
+    const s1 = Math.min(b, s + 0.5);
+    path.add(new THREE.LineCurve3(W(x, floorY(s) + yOff, s), W(x, floorY(s1) + yOff, s1)));
+  }
+  const geo = new THREE.TubeGeometry(path, Math.ceil((b - a) * 2), radius, 6, false);
+  const m = mat.clone();
+  m.map = mat.map.clone();
+  m.map.repeat.set((b - a) / 1.2, 1);
+  m.map.needsUpdate = true;
+  return new THREE.Mesh(geo, m);
+}
+
+// [a, b] minus the given intervals
+function subtractRanges(a, b, cuts) {
+  const out = [];
+  let cur = a;
+  for (const [c0, c1] of [...cuts].sort((p, q) => p[0] - q[0])) {
+    if (c1 <= cur || c0 >= b) continue;
+    if (c0 > cur) out.push([cur, c0]);
+    cur = Math.max(cur, c1);
+  }
+  if (cur < b) out.push([cur, b]);
+  return out;
+}
+
 function buildLevel(n) {
   if (levelGroup) { disposeGroup(levelGroup); scene.remove(levelGroup); }
   level = generateLevel(n);
+  level.theme = themeFor(n);
+  applyTheme(level.theme);
   levelGroup = new THREE.Group();
   scene.add(levelGroup);
 
-  // floor & rails for each continuous run between gaps
-  const runs = [];
-  let a = level.startS;
-  for (const gp of [...level.gaps].sort((p, q) => p[0] - q[0])) { runs.push([a, gp[0]]); a = gp[1]; }
-  runs.push([a, level.endS]);
+  // floor for each continuous run between gaps; rails also stop at the open (rail-less) stretches
+  const runs = subtractRanges(level.startS, level.endS, level.gaps);
   const postMatrices = [];
   for (const [ra, rb] of runs) {
     levelGroup.add(buildFloor(ra, rb));
-    buildRails(ra, rb, levelGroup, postMatrices);
+    for (const [ca, cb] of subtractRanges(ra, rb, level.open)) buildRails(ca, cb, levelGroup, postMatrices);
+  }
+  for (const [oa, ob] of level.open) {
+    for (const side of [-1, 1]) levelGroup.add(edgeTube(oa, ob, side * (HW - 0.08), 0.03, 0.09, M.curb));
+  }
+  // boost pads
+  for (const b of level.boosts) {
+    const pad = new THREE.Group();
+    placeOnTrack(pad, b.s, floorY(b.s) + 0.09, b.x);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 3), M.boost);
+    m.rotation.x = -Math.PI / 2;
+    pad.add(m);
+    levelGroup.add(pad);
   }
   const posts = new THREE.InstancedMesh(G.post, M.post, postMatrices.length);
   postMatrices.forEach((m, i) => posts.setMatrixAt(i, m));
@@ -777,8 +896,10 @@ function updateParticles(dt) {
 const $ = id => document.getElementById(id);
 const ui = {
   levelNum: $('levelNum'), progress: $('progressFill'), stars: $('starCount'), toast: $('toast'), hint: $('hint'),
-  start: $('startScreen'), pause: $('pauseScreen'), win: $('winScreen'),
+  start: $('startScreen'), pause: $('pauseScreen'), win: $('winScreen'), countdown: $('countdown'),
 };
+const best = store.get('best', {});   // level number -> best star rating (1-3)
+const ratingText = r => '★'.repeat(r) + '☆'.repeat(3 - r);
 let toastTimer = 0;
 function toast(text, secs = 1.2) {
   ui.toast.textContent = text;
@@ -794,6 +915,7 @@ let pickLevel = store.get('level', 1);
 function refreshPicker() {
   pickLevel = clamp(pickLevel, 1, maxLevel);
   $('lvlPick').textContent = 'Level ' + pickLevel;
+  $('lvlBest').textContent = best[pickLevel] ? ratingText(best[pickLevel]) : themeFor(pickLevel).name;
   $('lvlDown').disabled = pickLevel <= 1;
   $('lvlUp').disabled = pickLevel >= maxLevel;
 }
@@ -810,12 +932,22 @@ let time = 0;
 let invincible = 0;
 let hintShown = true;
 let squash = 0;
+let shake = 0;
+let countdownStep = -1;
 
 function placeBallAt(s) {
   ball.s = s; ball.x = 0; ball.target = 0;
   ball.y = floorY(s); ball.lastSafeY = ball.y;
   ball.v = s === 0 ? 0 : 4; ball.vy = 0; ball.vxb = 0;
   ball.grounded = true; ball.inGap = false;
+}
+
+function bumpStars() {
+  ui.stars.textContent = starsThisLevel;
+  const box = ui.stars.parentElement;
+  box.classList.remove('bump');
+  void box.offsetWidth;   // restart the CSS animation
+  box.classList.add('bump');
 }
 
 function startLevel(n) {
@@ -827,10 +959,12 @@ function startLevel(n) {
   placeBallAt(0);
   ballMesh.quaternion.identity();
   snapCamera();
-  state = 'playing';
+  state = 'countdown';
+  stateTimer = 0;
+  countdownStep = -1;
   showOverlay(null);
   store.set('level', n);
-  toast('Level ' + n, 1.2);
+  toast(`Level ${n} · ${level.theme.name}`, 2);
 }
 
 function respawn() {
@@ -849,10 +983,19 @@ function finishLevel() {
   const finished = level;
   setTimeout(() => {
     if (state !== 'finished' || level !== finished) return;
+    const total = level.coins.length + level.rings.length * 3;
+    const ratio = starsThisLevel / total;
+    const rating = ratio >= 0.75 ? 3 : ratio >= 0.4 ? 2 : 1;
+    const newBest = rating > (best[level.n] || 0);
+    if (newBest) { best[level.n] = rating; store.set('best', best); }
     $('winTitle').textContent = `Level ${level.n} Done!`;
-    $('winStars').textContent = `⭐ ${starsThisLevel} / ${level.coins.length + level.rings.length * 3}`;
-    $('winMsg').textContent = ['Great job!', 'You did it!', 'Super rolling!', 'Amazing!', 'Way to go!'][level.n % 5];
+    $('winRating').innerHTML = [0, 1, 2].map(i =>
+      `<span class="${i < rating ? 'on' : ''}" style="animation-delay:${0.25 + i * 0.25}s">★</span>`).join('');
+    $('winStars').textContent = `⭐ ${starsThisLevel} / ${total} collected`;
+    $('winMsg').textContent = rating === 3 ? (newBest ? 'PERFECT! New best!' : 'PERFECT!')
+      : rating === 2 ? 'Great job! Grab more stars for ★★★' : 'You made it! Can you catch more stars?';
     showOverlay(ui.win);
+    [0, 1, 2].forEach(i => { if (i < rating) setTimeout(() => sound.beep(i === rating - 1), 250 + i * 250); });
   }, 1600);
 }
 
@@ -900,7 +1043,7 @@ document.addEventListener('touchmove', e => e.preventDefault(), { passive: false
 document.addEventListener('dblclick', e => e.preventDefault());
 
 function pause() {
-  if (state !== 'playing' && state !== 'falling') return;
+  if (state !== 'playing' && state !== 'falling' && state !== 'countdown') return;
   pausedFrom = state;
   state = 'paused';
   showOverlay(ui.pause);
@@ -936,6 +1079,7 @@ function hit(o, nx, nz, pen, obsVx, strength) {
   else ball.v *= 0.85;
   ball.vxb += nx * strength + obsVx * 0.5;
   squash = 1;
+  shake = 0.35;
   sound.bump();
 }
 
@@ -1093,7 +1237,20 @@ function update(dt) {
   }
   for (const c of level.coins) if (!c.taken) c.mesh.rotation.y = time * 3 + c.s;
   for (const r of level.rings) r.mesh.rotation.z = time * 0.6;
+  boostTex.offset.y = -time * 1.5;
   updateParticles(dt);
+
+  if (state === 'countdown') {
+    stateTimer += dt;
+    const step = Math.floor(stateTimer / 0.6);   // 3, 2, 1, GO!
+    if (step !== countdownStep && step <= 3) {
+      countdownStep = step;
+      ui.countdown.textContent = step < 3 ? String(3 - step) : 'GO!';
+      ui.countdown.classList.remove('pop'); void ui.countdown.offsetWidth; ui.countdown.classList.add('pop');
+      sound.beep(step === 3);
+    }
+    if (stateTimer >= 1.8) state = 'playing';
+  }
 
   if (state === 'playing' || state === 'falling' || state === 'finished') {
     const prevS = stepBall(dt);
@@ -1107,7 +1264,7 @@ function update(dt) {
         c.taken = true;
         c.mesh.visible = false;
         starsThisLevel++;
-        ui.stars.textContent = starsThisLevel;
+        bumpStars();
         sound.coin();
         burst(c.mesh.position, 6, { speed: 3, up: 3, life: 0.6, gold: true });
       }
@@ -1117,10 +1274,25 @@ function update(dt) {
       if (!r.done && prevS < r.s && ball.s >= r.s && Math.hypot(ball.x, ball.y + R - r.y) < 2.1) {
         r.done = true;
         starsThisLevel += 3;
-        ui.stars.textContent = starsThisLevel;
+        bumpStars();
         sound.ring();
         toast('Awesome! +3 ⭐', 1);
         burst(r.mesh.position, 30, { speed: 7, up: 3, life: 1 });
+      }
+    }
+    // boost pads
+    for (const b of level.boosts) {
+      if (prevS < b.s && ball.s >= b.s && Math.abs(ball.x - b.x) < 1.4 && ball.grounded) {
+        ball.v = Math.max(ball.v, maxSpeed(level.n));
+        sound.boost();
+        shake = 0.15;
+      }
+    }
+    // rail-less stretch ahead
+    for (const o of level.open) {
+      if (!o.warned && ball.s > o[0] - 3 && ball.s < o[0] && state === 'playing') {
+        o.warned = true;
+        toast('No rails! Careful! ⚠️', 1.4);
       }
     }
     // checkpoints
@@ -1189,6 +1361,15 @@ function updateCamera(dt) {
   camLook.lerp(look, k);
   camera.position.copy(camPos);
   camera.lookAt(camLook);
+  if (shake > 0) {
+    shake = Math.max(0, shake - dt * 1.5);
+    camera.position.x += (Math.random() - 0.5) * shake;
+    camera.position.y += (Math.random() - 0.5) * shake;
+  }
+  // widen the view as the ball speeds up
+  const fov = baseFov + clamp((Math.abs(ball.v) - 9) * 0.9, 0, 12);
+  if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = lerp(camera.fov, fov, 1 - Math.exp(-3 * dt)); camera.updateProjectionMatrix(); }
+  starfield.position.copy(camera.position);
   const bp = ballMesh.position;
   sun.position.set(bp.x + 6, bp.y + 16, bp.z + 4);
   sun.target.position.set(bp.x, bp.y, bp.z - 4);
