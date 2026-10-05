@@ -1,0 +1,10 @@
+{
+  "name": "Ball Roll Adventure",
+  "short_name": "Ball Roll",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "any",
+  "background_color": "#cfe8ff",
+  "theme_color": "#7cc4ff",
+  "icons": [{ "src": "icon.png", "sizes": "512x512", "type": "image/png" }]
+}
