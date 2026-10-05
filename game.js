@@ -281,6 +281,50 @@ let levelGroup = null;
 
 function baseY(s) { return -SLOPE * s; }
 
+// The track's centerline bends left and right. Physics works in track coordinates
+// (s = distance along the track, x = sideways offset); W() maps them into the world.
+function curvature(s, L = level) {
+  for (const c of L.curves) {
+    if (s >= c.s0 && s < c.s0 + c.len) {
+      const u = (s - c.s0) / c.len;
+      return (c.angle / c.len) * (1 - Math.cos(2 * Math.PI * u));   // eases in and out
+    }
+  }
+  return 0;
+}
+const CL_STEP = 0.25;
+function buildCenterline(L) {
+  const s0 = L.startS - 40, count = Math.ceil((L.endS + 60 - s0) / CL_STEP) + 1;
+  const px = new Float64Array(count), pz = new Float64Array(count), psi = new Float64Array(count);
+  let x = 0, z = -s0, h = 0;
+  for (let i = 0; i < count; i++) {
+    px[i] = x; pz[i] = z; psi[i] = h;
+    const k = curvature(s0 + (i + 0.5) * CL_STEP, L);
+    const hm = h + k * CL_STEP / 2;
+    x -= Math.sin(hm) * CL_STEP;
+    z -= Math.cos(hm) * CL_STEP;
+    h += k * CL_STEP;
+  }
+  L.cl = { s0, count, px, pz, psi };
+}
+function frameAt(s) {
+  const c = level.cl;
+  const f = clamp((s - c.s0) / CL_STEP, 0, c.count - 1.001);
+  const i = Math.floor(f), t = f - i;
+  return { x: lerp(c.px[i], c.px[i + 1], t), z: lerp(c.pz[i], c.pz[i + 1], t), psi: lerp(c.psi[i], c.psi[i + 1], t) };
+}
+// track coords -> world position
+function W(x, y, s, out = new THREE.Vector3()) {
+  const f = frameAt(s);
+  return out.set(f.x + x * Math.cos(f.psi), y, f.z - x * Math.sin(f.psi));
+}
+// place a group at a point on the track, turned to face along it
+function placeOnTrack(obj, s, y, x = 0) {
+  W(x, y, s, obj.position);
+  obj.rotation.y = frameAt(s).psi;
+  return obj;
+}
+
 function rampAt(s) {
   for (const r of level.ramps) if (s >= r.s0 && s < r.s0 + r.len) return r;
   return null;
@@ -313,7 +357,19 @@ function generateLevel(n) {
   const rng = mulberry32(n * 7919 + 13);
   const pick = arr => arr[Math.floor(rng() * arr.length)];
   const L = {
-    n, startS: -8, ramps: [], gaps: [], checkpoints: [], obstacles: [], coins: [], rings: [],
+    n, startS: -8, ramps: [], gaps: [], checkpoints: [], obstacles: [], coins: [], rings: [], curves: [],
+  };
+  let heading = 0;
+  const MAX_HEADING = 1.4;   // never turn back on itself, so the track can't cross over itself
+  const curve = (s0, dir) => {
+    const len = 20 + rng() * 14;
+    const maxAngle = Math.min(0.55 + n * 0.08, 1.3);
+    const angle = (0.6 + rng() * 0.4) * maxAngle;
+    if (!dir) dir = rng() < 0.5 ? -1 : 1;
+    if (heading + dir * angle > MAX_HEADING || heading + dir * angle < -MAX_HEADING) dir = -dir;
+    L.curves.push({ s0, len, angle: dir * angle });
+    heading += dir * angle;
+    return { end: s0 + len, dir };
   };
   const vt = targetSpeed(n);
 
@@ -386,6 +442,16 @@ function generateLevel(n) {
   L.checkpoints.push(0);
   coinLine(8, 20);
   s = 24;
+  // twists and turns between obstacle sections (obstacles and jumps themselves sit on straights)
+  const bend = () => {
+    if (rng() > 0.75) return;
+    const c = curve(s);
+    coinLine(s + 4, c.end - 4, pick(['center', 'wave']));
+    s = c.end;
+    if (n >= 2 && rng() < 0.4) s = curve(s, -c.dir).end;   // S-bend
+    s += 3;
+  };
+  bend();
 
   const types = ['slider', 'jump'];
   if (n >= 2) types.push('spinner');
@@ -403,9 +469,11 @@ function generateLevel(n) {
     sinceCp = t === 'jump' ? 0 : sinceCp + 1;
     last = t;
     if (rng() < 0.5) { coinLine(s + 3, s + 11); s += 14; } else s += 5;
+    bend();
   }
   L.finishS = s + 6;
   L.endS = s + 45;
+  buildCenterline(L);
   return L;
 }
 
@@ -415,7 +483,7 @@ function generateLevel(n) {
 function trackSamples(a, b) {
   // sample points along [a, b] including ramp edges, so the floor follows ramps exactly
   const pts = new Set([a, b]);
-  for (let s = Math.ceil(a); s < b; s += 1) pts.add(s);
+  for (let s = Math.ceil(a); s < b; s += 0.5) pts.add(s);
   for (const r of level.ramps) {
     for (const e of [r.s0, r.s0 + r.len - 0.001, r.s0 + r.len]) if (e > a && e < b) pts.add(e);
   }
@@ -433,10 +501,11 @@ function buildFloor(a, b) {
     if (e1.cross(e2).dot(outward) < 0) { q = [quad[0], quad[3], quad[2], quad[1]]; u = [uvs[0], uvs[3], uvs[2], uvs[1]]; }
     for (const i of [0, 1, 2, 0, 2, 3]) { pos.push(q[i].x, q[i].y, q[i].z); uv.push(u[i][0], u[i][1]); }
   };
-  const V = (x, y, s) => new THREE.Vector3(x, y, -s);
+  const V = (x, y, s) => W(x, y, s);
   const yAt = s => (s === b ? floorY(s - 0.001) : floorY(s));
   const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
-  const LEFT = new THREE.Vector3(-1, 0, 0), RIGHT = new THREE.Vector3(1, 0, 0);
+  const rightAt = s => { const h = frameAt(s).psi; return new THREE.Vector3(Math.cos(h), 0, -Math.sin(h)); };
+  const fwdAt = s => { const h = frameAt(s).psi; return new THREE.Vector3(-Math.sin(h), 0, -Math.cos(h)); };
 
   const topStart = pos.length;
   for (let i = 0; i < samples.length - 1; i++) {
@@ -450,13 +519,13 @@ function buildFloor(a, b) {
     const s0 = samples[i], s1 = samples[i + 1], y0 = yAt(s0), y1 = yAt(s1);
     const T = FLOOR_T;
     add([V(-HW, y0, s0), V(-HW, y1, s1), V(-HW, y1 - T, s1), V(-HW, y0 - T, s0)],
-        [[s0 / 4, 1], [s1 / 4, 1], [s1 / 4, 0], [s0 / 4, 0]], LEFT);
+        [[s0 / 4, 1], [s1 / 4, 1], [s1 / 4, 0], [s0 / 4, 0]], rightAt(s0).negate());
     add([V(HW, y0, s0), V(HW, y1, s1), V(HW, y1 - T, s1), V(HW, y0 - T, s0)],
-        [[s0 / 4, 1], [s1 / 4, 1], [s1 / 4, 0], [s0 / 4, 0]], RIGHT);
+        [[s0 / 4, 1], [s1 / 4, 1], [s1 / 4, 0], [s0 / 4, 0]], rightAt(s0));
     add([V(-HW, y0 - T, s0), V(HW, y0 - T, s0), V(HW, y1 - T, s1), V(-HW, y1 - T, s1)],
         [[0, 0], [1, 0], [1, 1], [0, 1]], DOWN);
   }
-  for (const [s, dir] of [[a, new THREE.Vector3(0, 0, 1)], [b, new THREE.Vector3(0, 0, -1)]]) {
+  for (const [s, dir] of [[a, fwdAt(a).negate()], [b, fwdAt(b)]]) {
     const y = yAt(s);
     add([V(-HW, y, s), V(HW, y, s), V(HW, y - FLOOR_T, s), V(-HW, y - FLOOR_T, s)],
         [[0, 1], [1, 1], [1, 0], [0, 0]], dir);
@@ -480,9 +549,7 @@ function buildRails(a, b, group, postMatrices) {
     const path = new THREE.CurvePath();
     for (let i = 0; i < samples.length - 1; i++) {
       const s0 = samples[i], s1 = samples[i + 1];
-      path.add(new THREE.LineCurve3(
-        new THREE.Vector3(x, yAt(s0) + RAIL_H, -s0),
-        new THREE.Vector3(x, yAt(s1) + RAIL_H, -s1)));
+      path.add(new THREE.LineCurve3(W(x, yAt(s0) + RAIL_H, s0), W(x, yAt(s1) + RAIL_H, s1)));
     }
     const geo = new THREE.TubeGeometry(path, Math.max(4, samples.length * 2), RAIL_R, 8, false);
     const tex = stripeTex.clone();
@@ -495,21 +562,20 @@ function buildRails(a, b, group, postMatrices) {
     group.add(tube);
     for (const s of [a, b]) {
       const cap = new THREE.Mesh(G.railCap, M.railCap);
-      cap.position.set(x, yAt(s) + RAIL_H, -s);
+      W(x, yAt(s) + RAIL_H, s, cap.position);
       group.add(cap);
     }
     for (let s = a; s <= b; s += 2.5) {
       const y = yAt(s);
       postMatrices.push(new THREE.Matrix4().compose(
-        new THREE.Vector3(x, y + RAIL_H / 2, -s), new THREE.Quaternion(), new THREE.Vector3(1, RAIL_H, 1)));
+        W(x, y + RAIL_H / 2, s), new THREE.Quaternion(), new THREE.Vector3(1, RAIL_H, 1)));
     }
   }
 }
 
 function gate(s, banner, postMat) {
   const g = new THREE.Group();
-  const y = floorY(s);
-  g.position.set(0, y, -s);
+  placeOnTrack(g, s, floorY(s));
   const postGeo = new THREE.CylinderGeometry(0.22, 0.22, 4.2, 12);
   for (const side of [-1, 1]) {
     const p = new THREE.Mesh(postGeo, postMat);
@@ -526,7 +592,7 @@ function gate(s, banner, postMat) {
 
 function buildObstacle(o) {
   const g = new THREE.Group();
-  g.position.set(0, floorY(o.s), -o.s);
+  placeOnTrack(g, o.s, floorY(o.s));
   if (o.type === 'slider') {
     const box = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.2, 1.2), M.slider[o.color]);
     box.position.y = 0.6;
@@ -625,7 +691,7 @@ function buildLevel(n) {
   // stars
   level.coinMeshes = level.coins.map(c => {
     const m = new THREE.Mesh(G.star, M.star);
-    m.position.set(c.x, floorY(c.s) + (c.h || 0.75), -c.s);
+    W(c.x, floorY(c.s) + (c.h || 0.75), c.s, m.position);
     m.castShadow = true;
     c.mesh = m; c.taken = false;
     levelGroup.add(m);
@@ -636,7 +702,7 @@ function buildLevel(n) {
   for (const r of level.rings) {
     const m = new THREE.Mesh(new THREE.TorusGeometry(1.9, 0.22, 12, 40), M.ring);
     r.y = baseY(r.s) + r.h;
-    m.position.set(0, r.y, -r.s);
+    placeOnTrack(m, r.s, r.y);
     levelGroup.add(m);
     r.mesh = m; r.done = false;
   }
@@ -667,7 +733,7 @@ function buildLevel(n) {
       p.position.set(i * 2.2 - puffs, rng() * 1.2, rng() * 1.5);
       cloud.add(p);
     }
-    cloud.position.set(side * (14 + rng() * 30), baseY(s) - 12 + rng() * 18, -s - rng() * 6);
+    W(side * (16 + rng() * 30), baseY(s) - 14 + rng() * 12, s + rng() * 6, cloud.position);
     levelGroup.add(cloud);
   }
 }
@@ -778,7 +844,7 @@ function finishLevel() {
   state = 'finished';
   stateTimer = 0;
   sound.win();
-  burst(new THREE.Vector3(0, floorY(level.finishS) + 4, -level.finishS), 120, { speed: 14, up: 8, life: 2.5 });
+  burst(W(0, floorY(level.finishS) + 4, level.finishS), 120, { speed: 14, up: 8, life: 2.5 });
   if (level.n + 1 > maxLevel) { maxLevel = level.n + 1; store.set('maxLevel', maxLevel); }
   const finished = level;
   setTimeout(() => {
@@ -959,6 +1025,8 @@ function stepBall(dt) {
   ball.x += (ctrl + ball.vxb) * dt;
   ball.target += ball.vxb * dt;
   ball.vxb *= Math.exp(-5 * dt);
+  // fast balls drift gently toward the outside of a bend
+  if (ball.grounded) ball.vxb += curvature(ball.s) * ball.v * ball.v * 0.08 * dt;
 
   // guard rails
   const g0 = floorY(ball.s);
@@ -1052,7 +1120,7 @@ function update(dt) {
         ui.stars.textContent = starsThisLevel;
         sound.ring();
         toast('Awesome! +3 ⭐', 1);
-        burst(new THREE.Vector3(0, r.y, -r.s), 30, { speed: 7, up: 3, life: 1 });
+        burst(r.mesh.position, 30, { speed: 7, up: 3, life: 1 });
       }
     }
     // checkpoints
@@ -1082,7 +1150,7 @@ function update(dt) {
 
   // ball visuals
   const prevPos = ballMesh.position.clone();
-  ballMesh.position.set(ball.x, ball.y + R, -ball.s);
+  W(ball.x, ball.y + R, ball.s, ballMesh.position);
   const move = ballMesh.position.clone().sub(prevPos);
   move.y = 0;
   const dist = move.length();
@@ -1106,8 +1174,8 @@ const camLook = new THREE.Vector3();
 function cameraGoal() {
   const followY = Math.max(ball.y, ball.lastSafeY - 2);
   return {
-    pos: new THREE.Vector3(ball.x * 0.55, followY + 3.4, -ball.s + 7),
-    look: new THREE.Vector3(ball.x * 0.35, followY + 0.4, -ball.s - 7),
+    pos: W(ball.x * 0.55, followY + 3.4, ball.s - 7),
+    look: W(ball.x * 0.35, followY + 0.4, ball.s + 7),
   };
 }
 function snapCamera() {
@@ -1121,8 +1189,9 @@ function updateCamera(dt) {
   camLook.lerp(look, k);
   camera.position.copy(camPos);
   camera.lookAt(camLook);
-  sun.position.set(ball.x + 6, ball.y + 16, -ball.s + 4);
-  sun.target.position.set(ball.x, ball.y, -ball.s - 4);
+  const bp = ballMesh.position;
+  sun.position.set(bp.x + 6, bp.y + 16, bp.z + 4);
+  sun.target.position.set(bp.x, bp.y, bp.z - 4);
 }
 
 // ---------------------------------------------------------------------------
