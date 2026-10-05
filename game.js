@@ -12,6 +12,9 @@ const RAIL_H = 0.75;          // rail height above the floor
 const RAIL_R = 0.13;
 const FLOOR_T = 1.0;          // floor thickness
 const STEER_SENS = 1.7;       // track widths per full-screen swipe
+const PUSH_SENS = 16;         // speed gained per full-screen-height swipe up
+const CRUISE = 3;             // the downhill slope alone rolls the ball this fast
+const MAX_BACK = -6;          // fastest it can roll backwards
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -303,7 +306,8 @@ function slopeAt(s) {
 function railsAt(s) {
   return s >= level.startS && s <= level.endS && !gapAt(s);
 }
-function targetSpeed(n) { return Math.min(8.5 + n * 0.35, 13.5); }
+function targetSpeed(n) { return Math.min(8.5 + n * 0.35, 13.5); }   // jump launch speed
+function maxSpeed(n) { return targetSpeed(n) + 5; }
 
 function generateLevel(n) {
   const rng = mulberry32(n * 7919 + 13);
@@ -789,28 +793,40 @@ function finishLevel() {
 // ---------------------------------------------------------------------------
 // Input: drag anywhere to steer
 // ---------------------------------------------------------------------------
-let dragging = false, lastPX = 0;
-const keys = { left: false, right: false };
+let dragging = false, lastPX = 0, lastPY = 0;
+const keys = { left: false, right: false, up: false, down: false };
+function pushBall(dv) {
+  if (!ball.grounded) return;   // no pushing mid-air
+  ball.v = clamp(ball.v + dv, MAX_BACK, maxSpeed(level.n));
+}
 window.addEventListener('pointerdown', e => {
   sound.unlock();
   if (e.target.closest('button')) return;
-  dragging = true; lastPX = e.clientX;
+  dragging = true; lastPX = e.clientX; lastPY = e.clientY;
 });
 window.addEventListener('pointermove', e => {
-  if (!dragging || state !== 'playing') { lastPX = e.clientX; return; }
+  if (!dragging || state !== 'playing') { lastPX = e.clientX; lastPY = e.clientY; return; }
   const dx = e.clientX - lastPX;
   lastPX = e.clientX;
+  const dy = e.clientY - lastPY;
+  lastPY = e.clientY;
   ball.target += (dx / window.innerWidth) * TRACK_W * STEER_SENS;
-  if (hintShown && Math.abs(dx) > 2) { hintShown = false; ui.hint.style.opacity = 0; }
+  // swipe up pushes the ball forward, swipe down brakes / rolls it back
+  pushBall((-dy / window.innerHeight) * PUSH_SENS);
+  if (hintShown && Math.hypot(dx, dy) > 2) { hintShown = false; ui.hint.style.opacity = 0; }
 });
 for (const ev of ['pointerup', 'pointercancel']) window.addEventListener(ev, () => { dragging = false; });
 window.addEventListener('keydown', e => {
   if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = true;
   if (e.key === 'ArrowRight' || e.key === 'd') keys.right = true;
+  if (e.key === 'ArrowUp' || e.key === 'w') keys.up = true;
+  if (e.key === 'ArrowDown' || e.key === 's') keys.down = true;
 });
 window.addEventListener('keyup', e => {
   if (e.key === 'ArrowLeft' || e.key === 'a') keys.left = false;
   if (e.key === 'ArrowRight' || e.key === 'd') keys.right = false;
+  if (e.key === 'ArrowUp' || e.key === 'w') keys.up = false;
+  if (e.key === 'ArrowDown' || e.key === 's') keys.down = false;
 });
 // stop iOS pinch-zoom / double-tap zoom / scroll bounce
 document.addEventListener('gesturestart', e => e.preventDefault());
@@ -849,7 +865,8 @@ function hit(o, nx, nz, pen, obsVx, strength) {
   ball.s -= nz * pen;
   if (o.cooldown > 0) return;
   o.cooldown = 0.35;
-  if (nz > 0.45) ball.v = Math.max(2, ball.v * 0.45);   // hit it head-on: slow down
+  // hit it head-on (front while rolling forward, back while rolling backward): bounce off
+  if (Math.abs(nz) > 0.45 && ball.v * nz > 0) ball.v = -ball.v * 0.3;
   else ball.v *= 0.85;
   ball.vxb += nx * strength + obsVx * 0.5;
   squash = 1;
@@ -922,8 +939,15 @@ function stepBall(dt) {
   const vt = targetSpeed(level.n);
   // forward motion
   if (state === 'finished') ball.v = Math.max(0, ball.v - 6 * dt);
-  else if (ball.grounded) ball.v += (vt - ball.v) * 1.4 * dt;
-  if (rampAt(ball.s) && ball.grounded) ball.v = Math.max(ball.v, vt);
+  else if (ball.grounded) {
+    // momentum: speed from swipes fades slowly; the downhill slope keeps it gently rolling forward
+    if (keys.up) pushBall(10 * dt);
+    if (keys.down) pushBall(-10 * dt);
+    if (ball.v > CRUISE) ball.v = Math.max(CRUISE, ball.v - (0.6 + (ball.v - CRUISE) * 0.12) * dt);
+    else ball.v = Math.min(CRUISE, ball.v + 2.5 * dt);
+  }
+  // ramps act as boosters so every jump clears its gap
+  if (rampAt(ball.s) && ball.grounded && ball.v > 0) ball.v = Math.max(ball.v, vt);
   const prevS = ball.s;
   ball.s += ball.v * dt;
 
@@ -980,6 +1004,7 @@ function stepBall(dt) {
   if (ball.grounded) ball.lastSafeY = ball.y;
 
   if (ball.s >= level.endS - 1) { ball.s = level.endS - 1; ball.v = 0; }
+  if (ball.s <= level.startS + 1) { ball.s = level.startS + 1; ball.v = Math.max(0, ball.v); }
 
   return prevS;
 }
